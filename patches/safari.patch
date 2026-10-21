@@ -1,0 +1,283 @@
+diff --git a/assets/rules-safari.json b/assets/rules-safari.json
+new file mode 100644
+index 00000000..ca397ae6
+--- /dev/null
++++ b/assets/rules-safari.json
+@@ -0,0 +1,50 @@
++[
++  {
++    "id": 1,
++    "priority": 1,
++    "action": {
++      "type": "modifyHeaders",
++      "requestHeaders": [
++        {
++          "header": "origin",
++          "operation": "set",
++          "value": "https://www.bilibili.com"
++        },
++        {
++          "header": "referer",
++          "operation": "set",
++          "value": "https://www.bilibili.com"
++        }
++      ]
++    },
++    "condition": {
++      "domainType": "thirdParty",
++      "urlFilter": "||api.bilibili.com",
++      "resourceTypes": ["xmlhttprequest"]
++    }
++  },
++  {
++    "id": 2,
++    "priority": 1,
++    "action": {
++      "type": "modifyHeaders",
++      "requestHeaders": [
++        {
++          "header": "origin",
++          "operation": "set",
++          "value": "https://www.bilibili.com"
++        },
++        {
++          "header": "referer",
++          "operation": "set",
++          "value": "https://www.bilibili.com"
++        }
++      ]
++    },
++    "condition": {
++      "domainType": "thirdParty",
++      "urlFilter": "||passport.bilibili.com",
++      "resourceTypes": ["xmlhttprequest"]
++    }
++  }
++]
+diff --git a/src/composables/useDark.ts b/src/composables/useDark.ts
+index 6e023cc1..0e5e3881 100644
+--- a/src/composables/useDark.ts
++++ b/src/composables/useDark.ts
+@@ -123,6 +123,10 @@ function syncBilibiliTheme(isDark: boolean) {
+     return
+ 
+   lastThemeChangeState = isDark
++  if (__SAFARI__) {
++    window.postMessage({ type: 'bewlyBilibiliThemeChangeRequest', theme }, window.location.origin)
++    return
++  }
+   window.dispatchEvent(new CustomEvent('global.themeChange', { detail: theme }))
+ }
+ 
+diff --git a/src/global.d.ts b/src/global.d.ts
+index 75af84a6..49c04252 100644
+--- a/src/global.d.ts
++++ b/src/global.d.ts
+@@ -1,5 +1,6 @@
+ declare const __DEV__: boolean
+ declare const __BUILD_COMMIT__: string
++declare const __SAFARI__: boolean
+ 
+ declare module '*.vue' {
+   const component: any
+diff --git a/src/inject/index.ts b/src/inject/index.ts
+index 976f06d7..e7797372 100644
+--- a/src/inject/index.ts
++++ b/src/inject/index.ts
+@@ -696,6 +696,28 @@ else if (shouldInitializePageScript) {
+         }
+       `,
+     },
++    'bili-comment-user-info': {
++      id: 'bewly-comment-user-info-style',
++      css: `
++        #user-name a[style*="color"] {
++          color: var(--bew-theme-color) !important;
++        }
++      `,
++    },
++    'bili-rich-text': {
++      id: 'bewly-comment-rich-text-style',
++      css: `
++        :host {
++          --bili-rich-text-link-color: var(--bew-theme-color) !important;
++          --bili-rich-text-link-color-hover: var(--bew-theme-color-80) !important;
++        }
++
++        #contents img[src*="AeQJlYP7e.png"],
++        #contents img[src*="9f3ad0659e84c96a711b88dd33f4bc2e945045e0.png"] {
++          filter: var(--bew-filter-icon-glow);
++        }
++      `,
++    },
+   }
+ 
+   function ensureCommentShadowStyle(root: ShadowRoot, id: string, css: string) {
+@@ -4888,6 +4910,13 @@ else if (shouldInitializePageScript) {
+ 
+     const { type, data } = event.data
+ 
++    if (type === 'bewlyBilibiliThemeChangeRequest') {
++      const { theme } = event.data
++      if (theme === 'dark' || theme === 'light')
++        window.dispatchEvent(new CustomEvent('global.themeChange', { detail: theme }))
++      return
++    }
++
+     // 处理来自插件环境的消息
+     if (type === 'BEWLY_SETTINGS_UPDATE') {
+       const pageSettings = createPageSettingsPayload(data)
+diff --git a/src/logic/storage.ts b/src/logic/storage.ts
+index f046398a..894fa9a1 100644
+--- a/src/logic/storage.ts
++++ b/src/logic/storage.ts
+@@ -1042,6 +1042,26 @@ export const settings = useSettingsStorage(originalSettings, {
+ 
+     record.favoriteOrganizerFolders = normalizeFavoriteOrganizerFolders(record.favoriteOrganizerFolders)
+ 
++    if (__SAFARI__) {
++      record.openNotificationsPageAsDrawer = false
++      if (record.videoCardLinkOpenMode === 'drawer')
++        record.videoCardLinkOpenMode = 'newTab'
++      if (Number(record.safariRestoredFeatureProfileVersion ?? 0) < 1) {
++        record.enableCommentReplyTreeDisplay = true
++        const momentsDockItem = Array.isArray(record.dockItemsConfig)
++          ? record.dockItemsConfig.find((item: any) => item?.page === 'Moments')
++          : null
++        if (momentsDockItem)
++          momentsDockItem.useOriginalBiliPage = false
++        record.safariRestoredFeatureProfileVersion = 1
++      }
++      const drawerMenuItem = Array.isArray(menuConfig)
++        ? menuConfig.find((item: any) => item?.key === 'openInDrawer')
++        : null
++      if (drawerMenuItem?.visible)
++        drawerMenuItem.visible = false
++    }
++
+     Reflect.deleteProperty(record, 'detectCommentShadowBan')
+     Reflect.deleteProperty(record, 'showBewlyOrBiliTopBarSwitcher')
+     Reflect.deleteProperty(record, 'enableHomeGridVirtualization')
+diff --git a/src/manifest.ts b/src/manifest.ts
+index e501273b..985dbfff 100644
+--- a/src/manifest.ts
++++ b/src/manifest.ts
+@@ -5,6 +5,47 @@ import type PkgType from '../package.json'
+ import { isDev, isFirefox, isSafari, port, r } from '../scripts/utils'
+ import { CONTENT_SCRIPT_EXCLUDE_MATCHES, CONTENT_SCRIPT_MATCHES } from './constants/contentScript'
+ 
++// Safari: only inject into the pages BewlyCat actually takes over, and never into frames.
++const SAFARI_CONTENT_SCRIPT_MATCHES = [
++  '*://www.bilibili.com/',
++  '*://www.bilibili.com/index.html*',
++  '*://www.bilibili.com/video/*',
++  '*://www.bilibili.com/list/*',
++  '*://www.bilibili.com/bangumi/play/*',
++  '*://www.bilibili.com/festival/*',
++  '*://www.bilibili.com/watchlater*',
++  '*://www.bilibili.com/v/*',
++  '*://www.bilibili.com/c/*',
++  '*://www.bilibili.com/anime*',
++  '*://www.bilibili.com/guochuang*',
++  '*://www.bilibili.com/tv*',
++  '*://www.bilibili.com/movie*',
++  '*://www.bilibili.com/variety*',
++  '*://www.bilibili.com/mooc*',
++  '*://www.bilibili.com/documentary*',
++  '*://www.bilibili.com/opus/*',
++  '*://www.bilibili.com/history*',
++  '*://www.bilibili.com/account/history*',
++  '*://www.bilibili.com/read/*',
++  '*://www.bilibili.com/404*',
++  '*://search.bilibili.com/*',
++  '*://t.bilibili.com/*',
++  '*://space.bilibili.com/*',
++  '*://message.bilibili.com/*',
++  '*://member.bilibili.com/platform*',
++  '*://account.bilibili.com/*',
++  '*://passport.bilibili.com/login*',
++  '*://music.bilibili.com/pc/music-center*',
++]
++const SAFARI_CONTENT_SCRIPT_EXCLUDE_MATCHES = [
++  ...CONTENT_SCRIPT_EXCLUDE_MATCHES,
++  '*://t.bilibili.com/vote*',
++  '*://t.bilibili.com/share*',
++  '*://t.bilibili.com/pages/nav*',
++]
++const contentScriptMatches = isSafari ? SAFARI_CONTENT_SCRIPT_MATCHES : CONTENT_SCRIPT_MATCHES
++const contentScriptExcludeMatches = isSafari ? SAFARI_CONTENT_SCRIPT_EXCLUDE_MATCHES : CONTENT_SCRIPT_EXCLUDE_MATCHES
++
+ export async function getManifest() {
+   const pkg = await fs.readJSON(r('package.json')) as typeof PkgType
+ 
+@@ -38,7 +79,7 @@ export async function getManifest() {
+     },
+     permissions: [
+       'storage',
+-      'declarativeNetRequest',
++      isSafari ? 'declarativeNetRequestWithHostAccess' : 'declarativeNetRequest',
+       'cookies',
+       ...(!isSafari ? ['scripting'] : []),
+       ...isFirefox
+@@ -54,19 +95,19 @@ export async function getManifest() {
+     // Blank frames are not supported pages, so match_about_blank is intentionally omitted.
+     content_scripts: [
+       {
+-        matches: [...CONTENT_SCRIPT_MATCHES],
+-        exclude_matches: [...CONTENT_SCRIPT_EXCLUDE_MATCHES],
++        matches: [...contentScriptMatches],
++        exclude_matches: [...contentScriptExcludeMatches],
+         js: ['./dist/contentScripts/pageLoading.js', './dist/contentScripts/index.global.js'],
+         css: ['./dist/contentScripts/style.css'],
+         run_at: 'document_start',
+-        all_frames: true,
++        all_frames: !isSafari,
+       },
+       {
+-        matches: [...CONTENT_SCRIPT_MATCHES],
+-        exclude_matches: [...CONTENT_SCRIPT_EXCLUDE_MATCHES],
++        matches: [...contentScriptMatches],
++        exclude_matches: [...contentScriptExcludeMatches],
+         js: ['./dist/contentScripts/inject.global.js'],
+         run_at: 'document_start',
+-        all_frames: true,
++        all_frames: !isSafari,
+         world: 'MAIN',
+       },
+     ],
+@@ -97,7 +138,7 @@ export async function getManifest() {
+               {
+                 id: 'ruleset_1',
+                 enabled: true,
+-                path: 'assets/rules.json',
++                path: isSafari ? 'assets/rules-safari.json' : 'assets/rules.json',
+               },
+             ],
+           },
+@@ -107,6 +148,14 @@ export async function getManifest() {
+   if (isDev)
+     manifest.permissions?.push('webNavigation')
+ 
++  if (isSafari) {
++    (manifest as Record<string, any>).browser_specific_settings = {
++      safari: {
++        strict_min_version: '18.4',
++      },
++    }
++  }
++
+   if (isFirefox) {
+     manifest.browser_specific_settings = {
+       gecko: {
+diff --git a/vite.config.ts b/vite.config.ts
+index ddace4c2..06920ba5 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -46,6 +46,7 @@ export const sharedConfig: UserConfig = {
+     replace({
+       '__DEV__': JSON.stringify(isDev),
+       '__BUILD_COMMIT__': JSON.stringify(buildCommit),
++      '__SAFARI__': JSON.stringify(isSafari),
+       'process.env.NODE_ENV': JSON.stringify(isDev ? 'development' : 'production'),
+       '__VUE_OPTIONS_API__': JSON.stringify(true),
+       '__VUE_PROD_DEVTOOLS__': JSON.stringify(false),
